@@ -1,0 +1,21 @@
+{
+  "name": "Fleet Battle",
+  "genre": "board",
+  "dim": "2D",
+  "mode": "Turn-based",
+  "players": "2",
+  "hook": "Hide your fleet. Find theirs. A hit fires again.",
+  "how": "Drag your five ships into place, then take turns firing at the enemy grid. A hit lets you fire again; sink every enemy ship first to win.",
+  "controls": "Drag ships to move, tap to turn; click or tap a square to fire (arrows + Space work too)",
+  "uses": [
+    ["Hidden info", "Your ships are sealed so only you can read them (the host answers every shot, so it can too)."],
+    ["Host-run rules", "The host's browser checks every shot and runs the turns; if it leaves, the next player takes over."],
+    ["Bots", "A bot captain takes the empty seat, and a friend who joins takes over its fleet."],
+    ["Leaderboard", "Matches won, shown after every match."]
+  ],
+  "ideas": [
+    "Make the grid 10 by 10 with a sixth ship",
+    "Add a radar that reveals a 3 by 3 area once per match",
+    "Make it space, with spaceships and asteroids"
+  ]
+}

@@ -1,0 +1,951 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fleet Battle</title>
+<style>
+  :root { --ink: #eaf6ff; --gold: #ffd166; --panel: #0d2236; }
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #061523; }
+  body { color: var(--ink); font: 15px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; user-select: none; -webkit-user-select: none; }
+  #sea { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #safe { position: fixed; visibility: hidden; pointer-events: none; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  #status { position: fixed; top: max(8px, env(safe-area-inset-top)); left: 0; right: 0; text-align: center; pointer-events: none; padding: 0 12px; }
+  #statusText { font-weight: 800; font-size: 19px; text-shadow: 0 2px 6px #000c; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sub { font-size: 13px; opacity: .8; margin-top: 2px; min-height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #timer { width: 180px; height: 6px; margin: 5px auto 0; border-radius: 4px; background: #ffffff22; overflow: hidden; }
+  #timer i { display: block; height: 100%; background: var(--gold); transform-origin: left; }
+  #placeBar { position: fixed; left: 0; right: 0; bottom: calc(max(8px, env(safe-area-inset-bottom)) + 22px); display: flex; justify-content: center; gap: 12px; }
+  button { min-height: 48px; border-radius: 14px; border: 0; font: 800 16px system-ui, sans-serif; cursor: pointer; }
+  #placeBar button { min-width: 128px; padding: 0 18px; background: #ffffff1c; color: #fff; border: 1px solid #ffffff33; }
+  #placeBar button.go, #againPill { background: var(--gold); color: #2a1d00; border: 0; }
+  #againPill { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(max(8px, env(safe-area-inset-bottom)) + 22px); min-width: 150px; }
+  #toast { position: fixed; left: 50%; top: 42%; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: #000b; font-weight: 700;
+           pointer-events: none; transition: opacity .4s; white-space: nowrap; max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; }
+  #net { position: fixed; bottom: max(4px, env(safe-area-inset-bottom)); left: 0; right: 0; text-align: center; font-size: 12px; opacity: .7; pointer-events: none; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #0009; z-index: 30; }
+  #over[hidden], #placeBar[hidden], #againPill[hidden] { display: none; }
+  .box { box-sizing: border-box; width: min(380px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 18px; background: var(--panel);
+         border: 1px solid #ffffff22; text-align: center; box-shadow: 0 20px 60px #0009; }
+  .box h2 { margin: 0 0 4px; font-size: 28px; } .box p { margin: 0 0 12px; opacity: .8; }
+  .box h3 { margin: 6px 0 4px; font-size: 13px; color: var(--gold); text-align: left; }
+  .box ol { text-align: left; margin: 0 0 12px; padding-left: 24px; font-size: 14px; min-height: 30px; } .box li span { float: right; }
+  .box button { width: 100%; margin-top: 8px; background: var(--gold); color: #2a1d00; }
+  .box button.ghost { background: #ffffff1a; color: #fff; }
+  .hide { display: none !important; }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="sea"></canvas>
+<div id="safe"></div>
+<div id="status"><div id="statusText"></div><div id="sub"></div><div id="timer"><i></i></div></div>
+<div id="placeBar" hidden><button id="shuffle">Shuffle</button><button id="ready" class="go">Ready</button></div>
+<button id="againPill" hidden>Play again</button>
+<div id="toast" style="opacity:0"></div>
+<div id="net">Connecting…</div>
+<div id="over" hidden><div class="box">
+  <h2 id="overTitle"></h2><p id="overSub"></p>
+  <h3>Most wins</h3><ol id="board"><li>Loading…</li></ol>
+  <button id="again">Play again</button><button id="look" class="ghost">Look at the boards</button>
+</div></div>
+<script>
+/* ═══ FLEET BATTLE · a Multiplayer Agent starter ══════════════════════════════════════════
+ * Hide your fleet, then take turns firing at the other grid. A hit fires again; sink all five to win.
+ * Turn-based, 2 players; anyone else watches; a bot takes the other seat when you're alone.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ grid size, the fleet, timers, the bot, the leaderboard
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   SEALED FLEETS . the Seal helper: fleets are encrypted so only their owner can read them
+ *   SHIPS ......... a ship's squares, checking a fleet, placing one at random (or to fit known shots)
+ *   BOT ........... where a bot fires: chase a hit, else the square the most ships could cover
+ *   MATCH (HOST) .. seats, placing, firing, hits and sinks, bots, timers, and taking over as a
+ *                   new host. Only the host writes the shared fields.
+ *   MY FLEET ...... reading my sealed fleet, placing it, firing, re-sending it to a new host
+ *   SCREEN ........ layout, the sea, ships, shots, shells, particles, sounds
+ *   HUD & RESULTS . status line, buttons, the results card and the leaderboard
+ *   INPUT / LOOP .. pointer and keys, heartbeat, color fix, the main loop
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - The match lives in shared fields only the HOST writes: `game` (one JSON field: id, v, ph
+ *     "place"|"fire"|"over", host, seats, ready, placeAt, placeEnds, first, turn, t, turnAt,
+ *     turnEnds, marks, sunk, shots, hits, last, winner, endsAt, reveal) and `fleet0`/`fleet1`
+ *     (each human's ships, SEALED to that player's public key so only they can read them; the
+ *     host answers every shot, so it can read them too).
+ *   - marks[k] is seat k's grid as the enemy sees it: "." not fired at, "o" miss, "x" hit.
+ *     sunk[k] lists seat k's sunk ships (a ship's squares are public once it sinks).
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s).
+ *     It keeps both fleets in its own memory and works out every shot.
+ *   - Each player writes its OWN entity: `n` (name), `c` (color), `pk` (public key), `hb`.
+ *   - Players send intents to the host: "fleet" {g, box} (my placed ships, sealed to the host),
+ *     "fire" {g, t, c}, "again" {g}. `t` counts every shot, so an old or double intent is ignored.
+ *   - When the host changes, every seated player re-sends its fleet sealed to the new host
+ *     ("myfleet" {to, r, box}). A bot's fleet can't be re-sent, so the new host places it again
+ *     to fit every shot already fired (the same hits, misses and sunk ships).
+ *   - Timers are timestamps: placeEnds, turnEnds (then the host fires for you), endsAt.
+ *   - ?attract plays offline, bot against bot, both fleets shown (the preview video).
+ *   - Leaderboard "wins": +1 for each match a player wins, shown on the results card.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  size: 8,                    // squares per side of each grid
+  fleet: [4, 3, 3, 2, 2],     // ship lengths; ship k is CONFIG.fleet[k] squares long
+  shipNames: ["Battleship", "Cruiser", "Submarine", "Destroyer", "Patrol boat"],
+  hitAgain: true,             // a hit lets you fire again
+  placeMs: 45000,             // time to place your fleet (then it's sent as it stands)
+  turnMs: 20000,              // time to fire before the host fires for you
+  botMs: 1100,                // how long a bot aims before it fires
+  botPlaceMs: 2500,           // how long a bot takes to place its fleet
+  botFollowUp: 0.85,          // chance a bot chases a hit instead of firing somewhere new
+  botNoise: 0.45,             // randomness in where a bot hunts (0 = sharp, 1 = wild)
+  shellMs: 450,               // a shell's flight time before it lands
+  resultsMs: 30000,           // the results show this long, then a new match starts
+  seatGraceMs: 10000,         // a seated player silent this long hands the seat to a bot
+  rejoinMs: 3000,             // a new host waits this long for players to re-send their fleets
+  board: "wins",              // leaderboard name
+  attractShots: 16,           // ?attract: shots already fired when a match starts
+};
+const BOT_NAMES = ["Admiral Ada", "Captain Rex", "Commodore Kit", "Skipper Sol"];
+const COLORS = ["#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#b197fc", "#ff922b", "#f783ac", "#3bc9db"];
+const NAME_A = ["Brave", "Salty", "Lucky", "Swift", "Jolly", "Clever"], NAME_B = ["Otter", "Gull", "Shark", "Walrus", "Puffin", "Seal"];
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'fleet-battle',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+/** Still in the room and heard from within the seat grace time (a backgrounded phone keeps its seat). */
+const stillHere = (id) => id === net.sessionId || (!!S.entities.players[id] && performance.now() - (seenHb.get(id)?.at ?? -1e9) < CONFIG.seatGraceMs);
+
+// ── SEALED FLEETS ───────────────────────────────────────────────────────────────────
+// Everything in room state reaches every client, so a fleet is written SEALED: encrypted so only
+// its one reader can open it. Each player publishes a public key in its own entity (`pk`); the
+// host seals each fleet to that key and writes the box into shared state.
+//   - The host answers every shot, so the host can read both fleets. Fine for friends, not cheat-proof.
+//   - A new host can't open boxes the old host sealed, so every player re-sends its own fleet
+//     to the new host (sealed, with mp.send), and the new host re-places the bots' fleets.
+//   - crypto.subtle needs https or localhost. Without it seal()/open() pass the value through.
+//   - NEVER plaintext online: with no key for the recipient (a player who just joined and hasn't
+//     published `pk` yet, or one who left), seal() returns "" (an empty box nobody can open).
+//     Only players whose `pk` the host has get a seat; bots have no key, so the host keeps
+//     their fleets in its own memory.
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const Seal = {
+  pair: null,
+  pub: "",
+  keys: new Map(), // other player's public key -> derived AES key
+  get on() { return !!(window.crypto && crypto.subtle); },
+  /** Make this player's key pair. Returns the public key to publish: me.set("pk", pub). */
+  async init() {
+    if (!this.on) return "";
+    this.pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+    this.pub = b64(await crypto.subtle.exportKey("raw", this.pair.publicKey));
+    return this.pub;
+  },
+  async key(otherPub) {
+    let k = this.keys.get(otherPub);
+    if (!k) {
+      const theirs = await crypto.subtle.importKey("raw", unb64(otherPub), { name: "ECDH", namedCurve: "P-256" }, false, []);
+      k = await crypto.subtle.deriveKey({ name: "ECDH", public: theirs }, this.pair.privateKey, { name: "AES-GCM", length: 128 }, false, ["encrypt", "decrypt"]);
+      this.keys.set(otherPub, k);
+    }
+    return k;
+  },
+  /** Seal any JSON value so only the holder of `toPub` (and you) can open it. */
+  async seal(toPub, value) {
+    if (!this.on) return "p:" + JSON.stringify(value);
+    if (!toPub || !this.pair) return ""; // never plaintext: nobody can open an empty box
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await this.key(toPub), new TextEncoder().encode(JSON.stringify(value)));
+    return b64(iv) + "." + b64(ct);
+  },
+  /** Open a box sealed by the player whose public key is `fromPub`. Null if it isn't for you. */
+  async open(fromPub, box) {
+    if (typeof box !== "string") return null;
+    if (box.startsWith("p:")) return JSON.parse(box.slice(2));
+    if (!this.on || !fromPub || !this.pair) return null;
+    try {
+      const [iv, ct] = box.split(".").map(unb64);
+      const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, await this.key(fromPub), ct);
+      return JSON.parse(new TextDecoder().decode(pt));
+    } catch { return null; }
+  },
+};
+
+// ── SHIPS ───────────────────────────────────────────────────────────────────────────
+// A square is a number: row * size + column. A ship is [square, dir]: its first square and
+// 0 (runs right) or 1 (runs down). A fleet is one ship per entry of CONFIG.fleet, in that order.
+const N = CONFIG.size;
+const cellName = (c) => "ABCDEFGHIJKLMNOP"[c % N] + (Math.floor(c / N) + 1);
+function shipCells([c, d], k) { const out = []; for (let j = 0; j < CONFIG.fleet[k]; j++) out.push(c + j * (d ? N : 1)); return out; }
+function inBounds([c, d], k) { const r = Math.floor(c / N), col = c % N, len = CONFIG.fleet[k]; return c >= 0 && c < N * N && (d ? r + len <= N : col + len <= N); }
+/** A fleet is valid when every ship is on the grid and no two ships share a square. */
+function validFleet(f) {
+  if (!Array.isArray(f) || f.length !== CONFIG.fleet.length) return false;
+  const used = new Set();
+  return f.every((s, k) => Array.isArray(s) && Number.isInteger(s[0]) && (s[1] === 0 || s[1] === 1) && inBounds(s, k) && shipCells(s, k).every((c) => !used.has(c) && used.add(c)));
+}
+/** Does this fleet agree with the shots fired at it (hits on ships, misses on water, the same ships sunk)? */
+function fits(f, marks, sunk) {
+  if (!validFleet(f)) return false;
+  const on = new Set(f.flatMap(shipCells));
+  for (let c = 0; c < N * N; c++) if ((marks[c] === "x") !== on.has(c) && marks[c] !== ".") return false;
+  return sunk.every(([k, c, d]) => f[k][0] === c && f[k][1] === d);
+}
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+/** Place a whole fleet at random. With `marks`/`sunk` it fits the shots already fired: every hit is
+ *  covered, no ship sits on a miss, sunk ships stay put, and no afloat ship is already all hit. */
+function placeFleet(marks = "", sunk = []) {
+  const ships = CONFIG.fleet.map(() => null), used = new Set();
+  for (const [k, c, d] of sunk) { ships[k] = [c, d]; shipCells(ships[k], k).forEach((x) => used.add(x)); }
+  const need = []; for (let c = 0; c < N * N; c++) if (marks[c] === "x" && !used.has(c)) need.push(c);
+  const todo = ships.map((s, k) => (s ? -1 : k)).filter((k) => k >= 0).sort((a, b) => CONFIG.fleet[b] - CONFIG.fleet[a]);
+  let nodes = 0;
+  function spots(k) {
+    const out = [];
+    for (let c = 0; c < N * N; c++) for (const d of [0, 1]) {
+      const cells = inBounds([c, d], k) ? shipCells([c, d], k) : null;
+      if (!cells || cells.some((x) => used.has(x) || marks[x] === "o") || cells.every((x) => marks[x] === "x")) continue;
+      out.push({ s: [c, d], cover: cells.filter((x) => marks[x] === "x").length + Math.random() * 0.5 });
+    }
+    return shuffle(out).sort((a, b) => b.cover - a.cover).map((o) => o.s);
+  }
+  function go(n) {
+    if (++nodes > 30000) return false;
+    if (n === todo.length) return need.every((c) => used.has(c));
+    const left = need.filter((c) => !used.has(c)).length, room = todo.slice(n).reduce((s, k) => s + CONFIG.fleet[k], 0);
+    if (left > room) return false;
+    const k = todo[n];
+    for (const s of spots(k)) {
+      const cells = shipCells(s, k);
+      cells.forEach((x) => used.add(x)); ships[k] = s;
+      if (go(n + 1)) return true;
+      cells.forEach((x) => used.delete(x)); ships[k] = null;
+    }
+    return false;
+  }
+  return go(0) ? ships : null;
+}
+const randomFleet = () => placeFleet();
+
+// ── BOT ─────────────────────────────────────────────────────────────────────────────
+/** Where seat `s` fires next: next to a hit that hasn't sunk yet, else the square the most
+ *  afloat ships could still cover (with some noise, so bots aren't perfect). */
+function botAim(g, s) {
+  const o = 1 - s, m = g.marks[o];
+  const sunkCells = new Set(g.sunk[o].flatMap(([k, c, d]) => shipCells([c, d], k)));
+  const at = (r, c) => (r >= 0 && r < N && c >= 0 && c < N ? m[r * N + c] : "");
+  const open = []; for (let c = 0; c < N * N; c++) if (m[c] === "x" && !sunkCells.has(c)) open.push(c);
+  if (open.length && Math.random() < CONFIG.botFollowUp) {
+    const opts = [];
+    for (const h of open) {
+      const r = Math.floor(h / N), c = h % N;
+      for (const [dr, dc] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        if (at(r + dr, c + dc) !== ".") continue;
+        const behind = at(r - dr, c - dc) === "x" && !sunkCells.has((r - dr) * N + c - dc); // continues a line of hits
+        opts.push({ c: (r + dr) * N + c + dc, w: (behind ? 3 : 1) + Math.random() });
+      }
+    }
+    if (opts.length) return opts.sort((a, b) => b.w - a.w)[0].c;
+  }
+  const heat = Array(N * N).fill(0);
+  CONFIG.fleet.forEach((len, k) => {
+    if (g.sunk[o].some((x) => x[0] === k)) return;
+    for (let c = 0; c < N * N; c++) for (const d of [0, 1]) {
+      if (!inBounds([c, d], k)) continue;
+      const cells = shipCells([c, d], k);
+      if (cells.some((x) => m[x] === "o" || sunkCells.has(x))) continue;
+      for (const x of cells) if (m[x] === ".") heat[x]++;
+    }
+  });
+  let best = -1, bestW = -1;
+  for (let c = 0; c < N * N; c++) {
+    if (m[c] !== ".") continue;
+    const w = (heat[c] + 0.5) * (1 + CONFIG.botNoise * Math.random() * 3);
+    if (w > bestW) { bestW = w; best = c; }
+  }
+  return best;
+}
+
+// ── MATCH (HOST) ────────────────────────────────────────────────────────────────────
+// The host's private memory: both fleets, the re-sent fleets after a handover, intents waiting.
+const host = { last: null, ready: false, since: 0, busy: false, fleets: [], inbox: [], known: new Map() };
+const gameMemo = { raw: undefined, g: null };
+/** The game as state has it, or the host's own newer write that hasn't come back yet. */
+function game() {
+  if (gameMemo.raw !== S.shared.game) { gameMemo.raw = S.shared.game; gameMemo.g = parse(S.shared.game, null); }
+  const g = gameMemo.g;
+  return host.last && isHost() && (!g || host.last.v > g.v) ? host.last : g;
+}
+function writeGame(g) { g = { ...g, v: (game()?.v ?? 0) + 1 }; host.last = g; net.setShared("game", JSON.stringify(g)); return g; }
+const seatOf = (g, id) => (g ? g.seats.findIndex((s) => s.i === id) : -1);
+const pkOf = (id) => (id === net.sessionId ? Seal.pub : S.entities.players[id]?.pk);
+const canSit = (id) => net.offline || !Seal.on || !!pkOf(id);
+const playerName = (id) => (id === net.sessionId ? myName : S.entities.players[id]?.n || "Player");
+const playerColor = (id) => (id === net.sessionId ? myColor : S.entities.players[id]?.c || "#ccc");
+const seatName = (s) => (s.b ? s.n : playerName(s.i));
+const seatColor = (s) => (s.b ? s.c : playerColor(s.i));
+
+/** Seal one human's fleet to them and write it to `fleet<i>`. Never writes a fleet in the clear online. */
+async function sealFleet(g, i) {
+  const s = g.seats[i], ships = host.fleets[i];
+  if (!s || s.b || !ships) return;
+  const box = await Seal.seal(pkOf(s.i), ships);
+  if (box) net.setShared("fleet" + i, JSON.stringify({ id: s.i, r: g.id, by: Seal.pub, box })); // no key, no box: never in the clear
+}
+/** Write a result: the changed fleets first, then the game. */
+async function commit(g, sealSeats = []) {
+  if (!g) return null;
+  for (const i of new Set(sealSeats)) await sealFleet(g, i);
+  return writeGame(g);
+}
+
+/** A new match: players who were seated keep their seats, then waiting players, then bots. */
+function newMatch(prev) {
+  const humans = ATTRACT ? [] : livePlayers().filter(canSit);
+  const keep = prev ? prev.seats.filter((s) => !s.b && humans.includes(s.i)).map((s) => s.i) : [];
+  const ids = [...keep, ...humans.filter((id) => !keep.includes(id))].slice(0, 2);
+  const used = new Set(ids.map(playerColor)), seats = ids.map((id) => ({ i: id, n: playerName(id), c: playerColor(id) }));
+  for (let k = 0; seats.length < 2; k++) {
+    const c = COLORS.find((x) => !used.has(x)) || COLORS[k]; used.add(c);
+    seats.push({ i: "bot" + k, n: BOT_NAMES[(k + (prev?.id ?? 0)) % BOT_NAMES.length], c, b: 1 });
+  }
+  host.fleets = seats.map((s) => (s.b ? randomFleet() : null));
+  host.ready = true;
+  const now = Date.now(), blank = ".".repeat(N * N);
+  return commit({ id: (prev?.id ?? 0) + 1, ph: "place", host: net.sessionId, seats, ready: [0, 0], placeAt: now, placeEnds: now + CONFIG.placeMs,
+    first: prev ? 1 - prev.first : Math.random() < 0.5 ? 0 : 1, turn: 0, t: 0, turnAt: 0, turnEnds: 0,
+    marks: [blank, blank], sunk: [[], []], shots: [0, 0], hits: [0, 0], last: null, winner: -1, endsAt: 0, reveal: null });
+}
+/** Everyone has placed: battle stations. (?attract skips ahead a few shots so the video is busy.) */
+function startFiring(g) {
+  const now = Date.now();
+  let out = { ...g, ph: "fire", turn: g.first, t: g.t + 1, turnAt: now + 900, turnEnds: now + 900 + CONFIG.turnMs };
+  for (let k = 0; ATTRACT && k < CONFIG.attractShots && out.ph === "fire"; k++) out = shoot(out, out.turn, botAim(out, out.turn));
+  return out;
+}
+/** Seat `s` fires at square `cell` of the other grid. Returns the new game (null if refused). */
+function shoot(g, s, cell) {
+  const o = 1 - s, ships = host.fleets[o], m = g.marks[o];
+  if (!ships || !(cell >= 0 && cell < N * N) || m[cell] !== ".") return null;
+  const k = ships.findIndex((sh, j) => shipCells(sh, j).includes(cell));
+  const marks = g.marks.slice(), sunk = g.sunk.map((a) => a.slice()), shots = g.shots.slice(), hits = g.hits.slice();
+  marks[o] = m.slice(0, cell) + (k >= 0 ? "x" : "o") + m.slice(cell + 1);
+  shots[s]++;
+  let r = "o";
+  if (k >= 0) {
+    hits[s]++; r = "x";
+    if (shipCells(ships[k], k).every((c) => marks[o][c] === "x")) { sunk[o].push([k, ...ships[k]]); r = "s"; }
+  }
+  const won = sunk[o].length === CONFIG.fleet.length, now = Date.now();
+  const out = { ...g, marks, sunk, shots, hits, turn: won || (k >= 0 && CONFIG.hitAgain) ? s : o, t: g.t + 1, turnAt: now, turnEnds: now + CONFIG.turnMs,
+    last: { s, c: cell, r, k, t: g.t + 1 } };
+  if (won) Object.assign(out, { ph: "over", winner: s, endsAt: now + CONFIG.resultsMs, reveal: host.fleets.slice() });
+  return out;
+}
+/** A player's placed fleet arrives (sealed to me). Checked, kept in memory, sealed back to its owner. */
+async function acceptFleet(g, i, from, d) {
+  const ships = from === net.sessionId ? d.ships : await Seal.open(pkOf(from), d.box);
+  const now = game();
+  if (!validFleet(ships) || !now || now.id !== g.id || now.ph !== "place" || now.ready[i] || now.seats[i].i !== from) return;
+  host.fleets[i] = ships;
+  const ready = now.ready.slice(); ready[i] = 1;
+  return commit({ ...now, ready }, [i]);
+}
+/** An intent from a player (or the host's own action), for this exact match and shot count. */
+function handle({ type, from, data: d }) {
+  const g = game();
+  if (!g || !d || d.g !== g.id) return;
+  const i = seatOf(g, from);
+  if (i < 0) return;
+  if (type === "again") return g.ph === "over" ? newMatch(g) : undefined;
+  if (type === "fleet" && g.ph === "place" && !g.ready[i]) return acceptFleet(g, i, from, d);
+  if (type === "fire" && g.ph === "fire" && g.turn === i && d.t === g.t) return commit(shoot(g, i, Number(d.c)));
+}
+/** Gone players hand their seat (and fleet) to a bot; a waiting player takes a bot's seat. */
+function fixSeats(g) {
+  if (ATTRACT) return null;
+  const waiting = livePlayers().filter((id) => canSit(id) && seatOf(g, id) < 0), seats = g.seats.slice(), ready = g.ready.slice(), seal = [];
+  let changed = false, placeEnds = g.placeEnds;
+  seats.forEach((s, i) => {
+    if (!s.b && !stillHere(s.i)) {
+      seats[i] = { i: `bot-${g.id}-${i}`, n: BOT_NAMES.find((b) => !seats.some((x) => x.n === b)) || "Bot", c: s.c, b: 1 }; changed = true;
+      if (!host.fleets[i]) host.fleets[i] = randomFleet(); // hadn't placed yet: the bot places (and gets ready on the next tick)
+    } else if (s.b && waiting.length) {
+      const id = waiting.shift(); seats[i] = { i: id, n: playerName(id), c: playerColor(id) }; changed = true;
+      if (g.ph === "place") { ready[i] = 0; placeEnds = Math.max(placeEnds, Date.now() + 20000); } else seal.push(i); // mid-battle: you take over the bot's fleet
+    }
+  });
+  return changed ? commit({ ...g, seats, ready, placeEnds }, seal) : null;
+}
+/** Just became host mid-match: collect everyone's re-sent fleets, then re-place the rest to fit the shots. */
+function adoptTable(g, now) {
+  if (!g || g.ph === "over" || (g.host === net.sessionId && host.fleets.length === 2)) { host.ready = true; return; }
+  const mine = seatOf(g, net.sessionId);
+  if (mine >= 0 && myFleet.r === g.id && myFleet.ships) host.known.set(mine, myFleet.ships);
+  const needs = (i) => !g.seats[i].b && (g.ph === "fire" || g.ready[i]);
+  const missing = g.seats.some((s, i) => needs(i) && stillHere(s.i) && !host.known.has(i));
+  if (missing && now - host.since < CONFIG.rejoinMs) return;
+  const resealed = [];
+  host.fleets = g.seats.map((s, i) => {
+    const k = host.known.get(i);
+    if (k && fits(k, g.marks[i], g.sunk[i])) return k;
+    if (g.ph === "place" && !g.ready[i] && !s.b) return null; // still placing: it will send its fleet to me
+    if (!s.b) resealed.push(i);
+    return placeFleet(g.marks[i], g.sunk[i]) || randomFleet();
+  });
+  host.ready = true; host.known.clear(); host.busy = true;
+  commit({ ...g, host: net.sessionId, turnAt: Date.now(), turnEnds: Math.max(g.turnEnds, Date.now() + 5000) }, resealed).finally(() => { host.busy = false; });
+}
+function hostTick(now) {
+  if (!host.since) host.since = now;
+  if (host.busy) return;
+  const g = game(), t = Date.now();
+  if (!host.ready) return adoptTable(g, now);
+  const run = (p) => { if (!p) return; host.busy = true; Promise.resolve(p).catch((e) => console.warn(e)).finally(() => { host.busy = false; }); };
+  if (host.inbox.length) return run(handle(host.inbox.shift()));
+  if (!g) return run(newMatch(null));
+  if (g.ph === "over") { if (t > g.endsAt) run(newMatch(g)); return; }
+  const seatChange = fixSeats(g);
+  if (seatChange) return run(seatChange);
+  if (g.ph === "place") {
+    if (g.ready[0] && g.ready[1]) return run(commit(startFiring(g)));
+    const late = t > g.placeEnds + 2500; // a player who never sent a fleet gets the one the host has (or a random one)
+    const now = g.seats.map((s, i) => (!g.ready[i] && ((s.b && t > g.placeAt + CONFIG.botPlaceMs) || late) ? i : -1)).filter((i) => i >= 0);
+    if (!now.length) return;
+    const ready = g.ready.slice();
+    for (const i of now) { ready[i] = 1; host.fleets[i] = host.fleets[i] || randomFleet(); }
+    return run(commit({ ...g, ready }, now.filter((i) => !g.seats[i].b)));
+  }
+  const s = g.turn;
+  if ((g.seats[s].b && t > g.turnAt + CONFIG.botMs) || t > g.turnEnds) run(commit(shoot(g, s, botAim(g, s))));
+}
+function stopHosting() { if (!host.since) return; Object.assign(host, { ready: false, since: 0, busy: false, last: null, inbox: [] }); host.known.clear(); }
+
+// ── MY FLEET ────────────────────────────────────────────────────────────────────────
+const myFleet = { key: "", r: -1, ships: null };   // my fleet in this match, as the host has it
+const draft = { r: -1, ships: null };              // the fleet I'm arranging before I press Ready
+let sentFor = -1, lastSend = 0, lastResend = 0, pending = null;
+/** My ships: the host reads its own memory; everyone else opens their sealed box. */
+function readMyFleet(g) {
+  const i = seatOf(g, net.sessionId);
+  if (i < 0) return;
+  if (isHost() && host.ready && host.fleets[i]) { myFleet.r = g.id; myFleet.ships = host.fleets[i]; myFleet.key = ""; return; }
+  const raw = S.shared["fleet" + i], key = g.id + "|" + i + "|" + raw;
+  if (key === myFleet.key) return;
+  myFleet.key = key;
+  const f = parse(raw, null);
+  if (!f || f.id !== net.sessionId || f.r !== g.id) return;
+  Seal.open(f.by, f.box).then((ships) => { if (myFleet.key === key && validFleet(ships)) { myFleet.ships = ships; myFleet.r = g.id; } });
+}
+/** The ships to draw on my grid: my draft while I'm placing, then my fleet. */
+function myShips(g) {
+  const i = seatOf(g, net.sessionId);
+  if (i < 0) return null;
+  if (placing(g)) return draft.ships;
+  return myFleet.r === g.id ? myFleet.ships : sentFor === g.id ? draft.ships : null;
+}
+const placing = (g) => g.ph === "place" && seatOf(g, net.sessionId) >= 0 && !g.ready[seatOf(g, net.sessionId)] && sentFor !== g.id;
+/** Ready: send my fleet to the host, sealed so only it can read it. Re-sent if it doesn't land. */
+async function sendFleet() {
+  const g = game(), i = seatOf(g, net.sessionId);
+  if (!g || g.ph !== "place" || i < 0 || g.ready[i] || !validFleet(draft.ships)) return;
+  sentFor = g.id; lastSend = performance.now();
+  myFleet.r = g.id; myFleet.ships = draft.ships.map((s) => s.slice());
+  if (isHost()) return host.inbox.push({ type: "fleet", from: net.sessionId, data: { g: g.id, ships: myFleet.ships } });
+  const box = await Seal.seal(pkOf(livePlayers()[0]), myFleet.ships);
+  if (box) net.send("fleet", { g: g.id, box }); // no host key yet: myTick sends it again shortly
+}
+/** A new host hasn't taken the table yet: send it my fleet, sealed so only it can read it. */
+function resendFleet(g, now) {
+  const hostId = livePlayers()[0], pk = pkOf(hostId), i = seatOf(g, net.sessionId);
+  if (hostId === net.sessionId || i < 0 || g.host === hostId || !pk || now - lastResend < 1500) return;
+  if (!(g.ph === "fire" || (g.ph === "place" && g.ready[i])) || myFleet.r !== g.id || !myFleet.ships) return;
+  lastResend = now;
+  Seal.seal(pk, myFleet.ships).then((box) => { if (box) net.send("myfleet", { to: hostId, r: g.id, box }); });
+}
+/** Keep my draft for this match (a fresh random one each match) and re-send Ready if it got lost. */
+function myTick(g, now) {
+  const i = seatOf(g, net.sessionId);
+  if (g.ph === "place" && i >= 0 && draft.r !== g.id) { draft.r = g.id; draft.ships = myFleet.r === g.id && myFleet.ships ? myFleet.ships.map((s) => s.slice()) : randomFleet(); }
+  if (g.ph === "place" && i >= 0 && !g.ready[i]) {
+    if (sentFor !== g.id && Date.now() > g.placeEnds - 600) sendFleet(); // time's up: send it as it stands
+    else if (sentFor === g.id && now - lastSend > 2500) sendFleet();      // the host never got it (maybe it changed)
+  }
+}
+const myTurn = (g) => g.ph === "fire" && g.turn === seatOf(g, net.sessionId) && !(pending && pending.t === g.t && performance.now() - pending.at < 3000);
+/** Send an intent to the host (the host queues its own). */
+function act(type, data) {
+  const g = game();
+  if (!g) return;
+  const msg = { g: g.id, t: g.t, ...data };
+  if (isHost()) host.inbox.push({ type, from: net.sessionId, data: msg }); else net.send(type, msg);
+}
+function fireAt(cell) {
+  const g = game(), o = 1 - seatOf(g, net.sessionId);
+  if (!g || !myTurn(g) || g.marks[o][cell] !== ".") return;
+  pending = { c: cell, t: g.t, at: performance.now() }; hintUntil = 0;
+  act("fire", { c: cell });
+}
+
+// ── SCREEN ──────────────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const cv = $("sea"), cx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, inset = { t: 0, b: 0 };
+function fit() {
+  DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  const st = getComputedStyle($("safe")); inset = { t: parseFloat(st.paddingTop) || 0, b: parseFloat(st.paddingBottom) || 0 };
+}
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+const GUT = 16, TITLE = 26; // room for the A-H / 1-8 labels, and the name row above each grid
+/** Where each grid goes. Placing: just mine, big. Then mine + the target (big, near the thumb on phones). */
+function layout(g) {
+  const mine = seatOf(g, net.sessionId), top = (ATTRACT ? 10 : 78) + inset.t, bottom = 28 + inset.b + (placing(g) || (g.ph === "over" && mine >= 0) ? 70 : 0);
+  const aw = W - 24 - GUT, ah = H - top - bottom;
+  const grid = (seat, role, x, y, s) => ({ seat, role, x: Math.round(x + GUT), y: Math.round(y + TITLE + GUT), s: Math.round(s), cs: Math.round(s) / N });
+  if (g.ph === "place" && mine >= 0) {
+    const s = Math.min(aw, ah - TITLE - GUT, 520);
+    return [grid(mine, "mine", (W - s - GUT) / 2, top + (ah - s - TITLE - GUT) / 2, s)];
+  }
+  const a = mine >= 0 ? mine : 0, b = 1 - a, ra = mine >= 0 ? "mine" : "watch", rb = mine >= 0 ? "target" : "watch";
+  if (H > W * 1.15) { // portrait: stacked, the grid you fire at below
+    const room = ah - 2 * (TITLE + GUT) - 12, sb = Math.min(aw, room * (mine >= 0 ? 0.6 : 0.5), 520), sa = Math.min(aw, room - sb, 520);
+    const y0 = top + (room - sa - sb) / 2;
+    return [grid(a, ra, (W - sa - GUT) / 2, y0, sa), grid(b, rb, (W - sb - GUT) / 2, y0 + sa + TITLE + GUT + 12, sb)];
+  }
+  const s = Math.min((aw - 36 - GUT) / 2, ah - TITLE - GUT, 500), x0 = (W - 2 * (s + GUT) - 36) / 2, y = top + (ah - s - TITLE - GUT) / 2;
+  return [grid(a, ra, x0, y, s), grid(b, rb, x0 + s + GUT + 36, y, s)];
+}
+const viewAt = (views, x, y) => views.find((v) => x >= v.x && x < v.x + v.s && y >= v.y && y < v.y + v.s);
+const cellIn = (v, x, y) => ({ r: Math.floor((y - v.y) / v.cs), c: Math.floor((x - v.x) / v.cs) });
+
+function roundRect(x, y, w, h, r) { cx.beginPath(); cx.roundRect ? cx.roundRect(x, y, w, h, r) : cx.rect(x, y, w, h); }
+/** One ship: a grey hull with a pointed bow, a stripe in its captain's color, turrets and a bridge. */
+function drawShip(v, ship, k, color, style) {
+  const [c, d] = ship, len = CONFIG.fleet[k], cs = v.cs;
+  cx.save();
+  cx.translate(v.x + (c % N + 0.5) * cs, v.y + (Math.floor(c / N) + 0.5) * cs);
+  if (d) cx.rotate(Math.PI / 2);
+  const L = (len - 1) * cs, h = cs * 0.3, sx = -cs * 0.4, bx = L + cs * 0.45;
+  cx.beginPath();
+  cx.moveTo(sx + h * 0.6, -h); cx.lineTo(bx - cs * 0.5, -h);
+  cx.quadraticCurveTo(bx - cs * 0.12, -h * 0.9, bx, 0); cx.quadraticCurveTo(bx - cs * 0.12, h * 0.9, bx - cs * 0.5, h);
+  cx.lineTo(sx + h * 0.6, h); cx.quadraticCurveTo(sx, h, sx, h * 0.4); cx.lineTo(sx, -h * 0.4); cx.quadraticCurveTo(sx, -h, sx + h * 0.6, -h);
+  if (style === "ghost") { cx.setLineDash([5, 4]); cx.strokeStyle = "#ffffffaa"; cx.lineWidth = 2; cx.stroke(); cx.restore(); return; }
+  const sunk = style === "sunk", hull = cx.createLinearGradient(0, -h, 0, h);
+  hull.addColorStop(0, sunk ? "#4a3b3b" : style === "bad" ? "#d9776f" : "#b9c7d6"); hull.addColorStop(1, sunk ? "#231c1f" : style === "bad" ? "#8a3d38" : "#61768c");
+  cx.fillStyle = hull; cx.globalAlpha = style === "dim" ? 0.55 : 1; cx.fill();
+  cx.lineWidth = style === "lift" ? 3 : 1.5; cx.strokeStyle = sunk ? "#ff6b6b" : style === "lift" ? "#ffd166" : "#24364a"; cx.stroke();
+  cx.fillStyle = sunk ? "#ff6b6b55" : color; cx.fillRect(sx + h * 0.5, -h * 0.18, bx - sx - cs * 0.7, h * 0.36); // the stripe
+  cx.fillStyle = sunk ? "#2a2024" : "#3b4b5e";
+  roundRect(sx + cs * 0.12, -h * 0.62, cs * 0.42, h * 1.24, 3); cx.fill(); // the bridge
+  for (let j = 1; j < len; j++) { cx.beginPath(); cx.arc(j * cs - cs * 0.1, 0, h * 0.42, 0, Math.PI * 2); cx.fill(); } // turrets
+  cx.restore();
+}
+/** A grid: sea, lines, labels, name row, ships, shots, and the aim marker. */
+function drawGrid(v, g, now, hiddenShots) {
+  const { x, y, s, cs } = v, seat = g.seats[v.seat], marks = g.marks[v.seat], active = g.ph === "fire" && g.turn !== v.seat;
+  // the name row: captain, role, and the ships still afloat
+  const role = v.role === "mine" ? "your fleet" : seat.b ? "bot" : seat.i === net.sessionId ? "you" : "";
+  cx.font = "700 14px system-ui, sans-serif"; cx.textBaseline = "middle"; cx.textAlign = "left";
+  const ty = y - GUT - TITLE / 2;
+  cx.fillStyle = seatColor(seat); cx.beginPath(); cx.arc(x + 6, ty, 6, 0, Math.PI * 2); cx.fill();
+  cx.fillStyle = "#eaf6ff";
+  let name = seatName(seat);
+  const room = s - CONFIG.fleet.reduce((t, l) => t + l * 6 + 5, 0) - 28, roleW = role ? role.length * 6.5 + 6 : 0;
+  const showRole = cx.measureText(name).width + roleW <= room;
+  while (name.length > 3 && cx.measureText(name).width > room) name = name.slice(0, -2) + "…";
+  cx.fillText(name, x + 18, ty);
+  if (role && showRole) { const w = cx.measureText(name).width; cx.font = "600 12px system-ui, sans-serif"; cx.fillStyle = "#9fb8cc"; cx.fillText(role, x + 24 + w, ty + 1); }
+  let px = x + s;
+  for (let k = CONFIG.fleet.length - 1; k >= 0; k--) { // afloat pips, right to left
+    const w = CONFIG.fleet[k] * 6, down = g.sunk[v.seat].some((z) => z[0] === k);
+    px -= w + 5;
+    cx.fillStyle = down ? "#ff6b6b66" : "#cfe3f5"; roundRect(px, ty - 3, w, 6, 3); cx.fill();
+    if (down) { cx.strokeStyle = "#ff6b6b"; cx.lineWidth = 1.5; cx.beginPath(); cx.moveTo(px - 1, ty + 4); cx.lineTo(px + w + 1, ty - 4); cx.stroke(); }
+  }
+  // the sea
+  cx.save(); roundRect(x, y, s, s, 10); cx.clip();
+  const sea = cx.createLinearGradient(x, y, x + s, y + s); sea.addColorStop(0, "#124a72"); sea.addColorStop(1, "#0a2c48");
+  cx.fillStyle = sea; cx.fillRect(x, y, s, s);
+  cx.strokeStyle = "#ffffff12"; cx.lineWidth = 1.5;
+  for (let i = 0; i < N * 2; i++) { // slow swells
+    const wy = y + (i + 0.5) * cs / 2;
+    cx.beginPath();
+    for (let wx = 0; wx <= s; wx += 10) cx.lineTo(x + wx, wy + Math.sin(wx * 0.045 + now / 700 + i * 1.7) * cs * 0.06);
+    cx.stroke();
+  }
+  if (v.role === "target" && myTurn(g)) { // a radar sweep while it's your shot
+    const a = (now / 900) % (Math.PI * 2), r = s * 0.75;
+    for (let j = 0; j < 14; j++) {
+      cx.fillStyle = `rgba(120,255,190,${0.1 * (1 - j / 14)})`;
+      cx.beginPath(); cx.moveTo(x + s / 2, y + s / 2); cx.arc(x + s / 2, y + s / 2, r, a - (j + 1) * 0.06, a - j * 0.06); cx.fill();
+    }
+  }
+  cx.strokeStyle = "#9fd8ff30"; cx.lineWidth = 1;
+  for (let i = 1; i < N; i++) { cx.beginPath(); cx.moveTo(x + i * cs, y); cx.lineTo(x + i * cs, y + s); cx.moveTo(x, y + i * cs); cx.lineTo(x + s, y + i * cs); cx.stroke(); }
+  cx.restore();
+  const pulse = 0.5 + 0.5 * Math.sin(now / 220);
+  cx.lineWidth = active ? 3 : 1.5; cx.strokeStyle = active ? `rgba(255,209,102,${0.45 + pulse * 0.5})` : "#9fd8ff40";
+  roundRect(x, y, s, s, 10); cx.stroke();
+  cx.fillStyle = "#9fb8cc"; cx.font = `600 ${Math.max(9, Math.min(12, cs * 0.3))}px system-ui, sans-serif`; cx.textAlign = "center";
+  for (let i = 0; i < N; i++) { cx.fillText("ABCDEFGHIJKLMNOP"[i], x + (i + 0.5) * cs, y - GUT / 2); cx.fillText(String(i + 1), x - GUT / 2, y + (i + 0.5) * cs); }
+  // ships: my own; sunk ones; after the match every ship; in ?attract both fleets
+  const sunkNow = g.sunk[v.seat].filter(([k]) => !hiddenShots.some((a) => a.seat === v.seat && a.r === "s" && a.k === k));
+  const sunkSet = new Set(sunkNow.map((z) => z[0])), color = seatColor(seat);
+  const ships = v.role === "mine" ? myShips(g) : ATTRACT ? host.fleets[v.seat] : null;
+  if (ships) ships.forEach((sh, k) => drawShip(v, sh, k, color, sunkSet.has(k) ? "sunk" : drag && drag.k === k && v.role === "mine" ? (drag.bad ? "bad" : "lift") : "ok"));
+  else {
+    for (const [k, c, d] of sunkNow) drawShip(v, [c, d], k, color, "sunk");
+    if (g.ph === "over" && g.reveal && g.reveal[v.seat]) g.reveal[v.seat].forEach((sh, k) => { if (!sunkSet.has(k)) drawShip(v, sh, k, color, "ghost"); });
+  }
+  // shots
+  for (let c = 0; c < N * N; c++) {
+    const m = marks[c];
+    if (m === "." || hiddenShots.some((a) => a.seat === v.seat && a.c === c)) continue;
+    const px2 = x + (c % N + 0.5) * cs, py = y + (Math.floor(c / N) + 0.5) * cs;
+    if (m === "o") {
+      cx.fillStyle = "#dff3ffcc"; cx.beginPath(); cx.arc(px2, py, cs * 0.1, 0, Math.PI * 2); cx.fill();
+      cx.strokeStyle = "#dff3ff40"; cx.lineWidth = 1.5; cx.beginPath(); cx.arc(px2, py, cs * (0.22 + 0.06 * Math.sin(now / 500 + c)), 0, Math.PI * 2); cx.stroke();
+    } else {
+      const f = 0.75 + 0.25 * Math.sin(now / 70 + c * 1.3), glow = cx.createRadialGradient(px2, py, 0, px2, py, cs * 0.45 * f);
+      glow.addColorStop(0, "#fff3b0"); glow.addColorStop(0.35, "#ff9f43dd"); glow.addColorStop(1, "#ff4d4d00");
+      cx.fillStyle = glow; cx.beginPath(); cx.arc(px2, py, cs * 0.45, 0, Math.PI * 2); cx.fill();
+      cx.strokeStyle = "#ff3b3b"; cx.lineWidth = Math.max(2, cs * 0.07); cx.lineCap = "round";
+      const q = cs * 0.16; cx.beginPath(); cx.moveTo(px2 - q, py - q); cx.lineTo(px2 + q, py + q); cx.moveTo(px2 + q, py - q); cx.lineTo(px2 - q, py + q); cx.stroke();
+    }
+  }
+  // the aim marker: where I'm pointing, or the shot on its way to the host
+  const aim = v.role === "target" && pending && pending.t === g.t ? pending.c : v.role === "target" && myTurn(g) && hover && hover.seat === v.seat ? hover.c : -1;
+  if (aim >= 0 && marks[aim] === ".") {
+    const ax = x + (aim % N + 0.5) * cs, ay = y + (Math.floor(aim / N) + 0.5) * cs, r = cs * (0.36 + (pending ? 0.05 * Math.sin(now / 60) : 0));
+    cx.strokeStyle = "#ffd166"; cx.lineWidth = 2.5; cx.beginPath(); cx.arc(ax, ay, r, 0, Math.PI * 2); cx.stroke();
+    cx.beginPath(); cx.moveTo(ax - r - 4, ay); cx.lineTo(ax - r * 0.4, ay); cx.moveTo(ax + r * 0.4, ay); cx.lineTo(ax + r + 4, ay);
+    cx.moveTo(ax, ay - r - 4); cx.lineTo(ax, ay - r * 0.4); cx.moveTo(ax, ay + r * 0.4); cx.lineTo(ax, ay + r + 4); cx.stroke();
+  }
+}
+// Shells in flight, particles and popping words, all drawn on the one canvas.
+const shells = [], parts = [], pops = [];
+let shake = 0;
+function burst(x, y, kind, cs) {
+  const n = kind === "sink" ? 60 : kind === "hit" ? 34 : 18;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = (kind === "miss" ? 40 + Math.random() * 90 : 60 + Math.random() * (kind === "sink" ? 320 : 200)) * Math.max(0.6, cs / 48);
+    const col = kind === "miss" ? (i % 3 ? "#dff3ff" : "#7cc8ff") : ["#fff3b0", "#ffd166", "#ff9f43", "#ff5d5d"][i % 4];
+    parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (kind === "miss" ? 120 : 40), g: kind === "miss" ? 420 : 160, life: 0.5 + Math.random() * 0.5, max: 1, r: 2 + Math.random() * 3, col });
+  }
+  if (kind !== "miss") for (let i = 0; i < (kind === "sink" ? 14 : 6); i++) parts.push({ x: x + (Math.random() - 0.5) * cs, y, vx: (Math.random() - 0.5) * 30, vy: -20 - Math.random() * 40, g: -10, life: 1.2 + Math.random(), max: 2.2, r: 6 + Math.random() * 8, col: "#3a4350", smoke: true });
+  parts.push({ x, y, ring: true, life: 0.6, max: 0.6, r: cs * 0.2, col: kind === "miss" ? "#dff3ff" : "#ffd166" });
+}
+function popText(text, x, y, color, big) { pops.push({ text, x, y, color, big, t0: performance.now() }); }
+let seenT = "", seenPh = "", lastSmoke = 0;
+/** When a shot lands in state: a shell falls on that square, then a splash or an explosion. */
+function effects(g, views, now) {
+  const key = g.id + ":" + g.t;
+  if (key !== seenT) {
+    const first = !seenT, prevPh = seenPh;
+    seenT = key; seenPh = g.ph;
+    if (!first && g.last && g.last.t === g.t) shells.push({ seat: 1 - g.last.s, c: g.last.c, r: g.last.r, k: g.last.k, t0: now });
+    if (!first && g.ph === "fire" && prevPh === "place") { hintUntil = performance.now() + 12000; toast(`Battle stations! ${g.first === seatOf(g, net.sessionId) ? "You fire" : seatName(g.seats[g.first]) + " fires"} first`); sound("horn"); }
+  }
+  for (let i = shells.length - 1; i >= 0; i--) {
+    const sh = shells[i], v = views.find((w) => w.seat === sh.seat);
+    if (now - sh.t0 < CONFIG.shellMs) continue;
+    shells.splice(i, 1);
+    if (!v) continue;
+    const x = v.x + (sh.c % N + 0.5) * v.cs, y = v.y + (Math.floor(sh.c / N) + 0.5) * v.cs, mineHit = v.role === "mine" && sh.r !== "o";
+    burst(x, y, sh.r === "s" ? "sink" : sh.r === "x" ? "hit" : "miss", v.cs);
+    if (sh.r === "s") popText(`Sunk! ${CONFIG.shipNames[sh.k] || "Ship"}`, x, y - v.cs * 0.6, "#ff6b6b", true);
+    else popText(sh.r === "x" ? `${cellName(sh.c)} Hit!` : `${cellName(sh.c)} Miss`, x, y - v.cs * 0.6, sh.r === "x" ? "#ffd166" : "#dff3ff", false);
+    if (sh.r !== "o") shake = Math.max(shake, mineHit ? 12 : sh.r === "s" ? 8 : 4);
+    sound(sh.r === "s" ? "sink" : sh.r === "x" ? "hit" : "miss");
+  }
+  if (now - lastSmoke > 140) { // burning ships smoke
+    lastSmoke = now;
+    const v = views[Math.floor(Math.random() * views.length)], m = v && g.marks[v.seat], hits = [];
+    if (m) for (let c = 0; c < N * N; c++) if (m[c] === "x") hits.push(c);
+    if (hits.length) { const c = hits[Math.floor(Math.random() * hits.length)]; parts.push({ x: v.x + (c % N + 0.5) * v.cs, y: v.y + (Math.floor(c / N) + 0.4) * v.cs, vx: (Math.random() - 0.5) * 12, vy: -18 - Math.random() * 14, g: -6, life: 1.6, max: 1.6, r: v.cs * 0.12, col: "#2c333d", smoke: true }); }
+  }
+}
+function drawShells(views, now) {
+  for (const sh of shells) {
+    const v = views.find((w) => w.seat === sh.seat);
+    if (!v) continue;
+    const k = Math.min(1, (now - sh.t0) / CONFIG.shellMs), x = v.x + (sh.c % N + 0.5) * v.cs, y = v.y + (Math.floor(sh.c / N) + 0.5) * v.cs;
+    cx.fillStyle = `rgba(0,0,0,${0.15 + k * 0.3})`; cx.beginPath(); cx.ellipse(x, y, v.cs * 0.12 * (0.5 + k), v.cs * 0.07 * (0.5 + k), 0, 0, Math.PI * 2); cx.fill();
+    const sy = y - (1 - k) * (1 - k) * v.cs * 3.2, r = v.cs * (0.2 - k * 0.08);
+    cx.strokeStyle = "#ffd16688"; cx.lineWidth = r; cx.lineCap = "round"; cx.beginPath(); cx.moveTo(x, sy - v.cs * 0.5 * (1 - k)); cx.lineTo(x, sy); cx.stroke();
+    cx.fillStyle = "#ffe9b0"; cx.beginPath(); cx.arc(x, sy, r * 0.7, 0, Math.PI * 2); cx.fill();
+  }
+}
+function drawParts(dt, now) {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.life -= dt;
+    if (p.life <= 0) { parts.splice(i, 1); continue; }
+    const a = Math.min(1, p.life / (p.max * 0.5));
+    if (p.ring) { cx.strokeStyle = p.col; cx.globalAlpha = a; cx.lineWidth = 3; cx.beginPath(); cx.arc(p.x, p.y, p.r + (1 - p.life / p.max) * p.r * 5, 0, Math.PI * 2); cx.stroke(); cx.globalAlpha = 1; continue; }
+    p.vy += p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+    if (p.smoke) p.r += dt * 8;
+    cx.globalAlpha = p.smoke ? a * 0.5 : a; cx.fillStyle = p.col; cx.beginPath(); cx.arc(p.x, p.y, p.r, 0, Math.PI * 2); cx.fill();
+  }
+  cx.globalAlpha = 1;
+  for (let i = pops.length - 1; i >= 0; i--) {
+    const p = pops[i], k = (now - p.t0) / 1200;
+    if (k >= 1) { pops.splice(i, 1); continue; }
+    const sc = k < 0.15 ? 0.5 + (k / 0.15) * 0.7 : 1.2 - Math.min(0.2, (k - 0.15) * 0.8);
+    cx.save(); cx.translate(p.x, p.y - k * 30); cx.scale(sc, sc); cx.globalAlpha = k > 0.7 ? (1 - k) / 0.3 : 1;
+    cx.font = `900 ${p.big ? 26 : 18}px system-ui, sans-serif`; cx.textAlign = "center"; cx.textBaseline = "middle";
+    cx.lineWidth = 5; cx.strokeStyle = "#000a"; cx.strokeText(p.text, 0, 0); cx.fillStyle = p.color; cx.fillText(p.text, 0, 0);
+    cx.restore();
+  }
+}
+function draw(g, views, now, dt) {
+  cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const bg = cx.createRadialGradient(W / 2, H * 0.45, 40, W / 2, H * 0.45, Math.max(W, H) * 0.75);
+  bg.addColorStop(0, "#0f3350"); bg.addColorStop(1, "#05111d");
+  cx.fillStyle = bg; cx.fillRect(0, 0, W, H);
+  shake = Math.max(0, shake - dt * 40);
+  cx.save(); cx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  for (const v of views) drawGrid(v, g, now, shells);
+  drawShells(views, now);
+  drawParts(dt, now);
+  cx.restore();
+}
+let actx = null, noise = null; // sounds start after the first tap (browsers require it)
+addEventListener("pointerdown", () => { if (!actx) try { actx = new AudioContext(); } catch {} });
+function sound(kind) {
+  if (!actx || ATTRACT) return;
+  const t = actx.currentTime, gn = actx.createGain();
+  gn.connect(actx.destination);
+  if (kind === "horn" || kind === "win") {
+    const o = actx.createOscillator(); o.type = "sawtooth"; o.frequency.setValueAtTime(kind === "win" ? 392 : 147, t); if (kind === "win") o.frequency.setValueAtTime(523, t + 0.18);
+    gn.gain.setValueAtTime(0.0001, t); gn.gain.exponentialRampToValueAtTime(0.12, t + 0.05); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.6);
+    o.connect(gn); o.start(t); o.stop(t + 0.65); return;
+  }
+  if (!noise) { noise = actx.createBuffer(1, actx.sampleRate, actx.sampleRate); const d = noise.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+  const src = actx.createBufferSource(), f = actx.createBiquadFilter(), len = kind === "sink" ? 1.1 : kind === "hit" ? 0.6 : 0.35;
+  src.buffer = noise; f.type = kind === "miss" ? "bandpass" : "lowpass";
+  f.frequency.setValueAtTime(kind === "miss" ? 1800 : 900, t); f.frequency.exponentialRampToValueAtTime(kind === "miss" ? 600 : 80, t + len);
+  gn.gain.setValueAtTime(kind === "miss" ? 0.25 : 0.6, t); gn.gain.exponentialRampToValueAtTime(0.001, t + len);
+  src.connect(f).connect(gn); src.start(t); src.stop(t + len);
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+let toastAt = 0, hintUntil = performance.now() + 15000, dropped = false, board = null, resultsFor = -1, closedFor = -1, overAt = 0, seatsSeen = null;
+function toast(text) { $("toast").textContent = text; $("toast").style.opacity = 1; toastAt = performance.now(); }
+function hud(g, now) {
+  if (now - toastAt > 2600) $("toast").style.opacity = 0;
+  const mine = seatOf(g, net.sessionId), opp = mine >= 0 ? g.seats[1 - mine] : null, n = livePlayers().length;
+  $("net").textContent = ATTRACT ? "" : net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the game" : ""}`;
+  if (ATTRACT) { $("status").classList.add("hide"); $("placeBar").hidden = $("againPill").hidden = true; $("over").hidden = true; return; }
+  const prev = seatsSeen; seatsSeen = { id: g.id, s: g.seats.map((s) => s.i) }; // someone took over from a bot, or a bot took over
+  if (prev && prev.id === g.id) g.seats.forEach((s, i) => { if (prev.s[i] !== s.i) toast(`${s.i === net.sessionId ? "You" : seatName(s)} took over ${i === mine ? "your seat" : "a fleet"}`); });
+  let text, sub = "", left = 0, span = 1;
+  const turnS = g.seats[g.turn];
+  if (g.ph === "place") {
+    left = g.placeEnds - Date.now(); span = CONFIG.placeMs;
+    if (placing(g)) { text = "Place your fleet"; sub = "Drag a ship to move it · tap it to turn"; }
+    else if (mine >= 0) { text = "Ready!"; sub = `Waiting for ${seatName(opp)} to place…`; left = 0; }
+    else { text = "The captains are hiding their fleets"; sub = "You're watching · you'll get a seat when one opens"; left = 0; }
+  } else if (g.ph === "fire") {
+    if (mine < 0) { text = `${seatName(turnS)} is firing`; sub = "You're watching"; }
+    else if (myTurn(g)) { text = g.last && g.last.s === mine && g.last.r !== "o" ? "Hit! Fire again" : "Your shot"; sub = performance.now() < hintUntil ? `Tap enemy waters · sink all ${CONFIG.fleet.length} ships · a hit fires again` : `${cellsLeft(g, 1 - mine)} enemy squares still afloat`; left = g.turnEnds - Date.now(); span = CONFIG.turnMs; }
+    else if (g.turn === mine) { text = "Firing…"; }
+    else { text = `${seatName(turnS)} ${turnS.b ? "is aiming…" : "is aiming at you"}`; sub = "Your fleet is on top"; if (W > H * 0.87) sub = "Your fleet is on the left"; }
+  } else {
+    text = g.winner === mine ? "Victory!" : mine >= 0 ? "Your fleet is sunk" : `${seatName(g.seats[g.winner])} wins`;
+  }
+  if ($("statusText").textContent !== text) $("statusText").textContent = text;
+  if ($("sub").textContent !== sub) $("sub").textContent = sub;
+  $("timer").style.visibility = left > 0 ? "visible" : "hidden";
+  $("timer").firstElementChild.style.transform = `scaleX(${Math.max(0, Math.min(1, left / span))})`;
+  $("placeBar").hidden = !placing(g);
+  results(g, mine);
+}
+const cellsLeft = (g, k) => CONFIG.fleet.reduce((s, l) => s + l, 0) - [...g.marks[k]].filter((m) => m === "x").length;
+function results(g, mine) {
+  if (g.ph !== "over") { $("over").hidden = true; $("againPill").hidden = true; overAt = 0; return; }
+  if (!overAt) overAt = performance.now() + 1600; // let the last explosion play first
+  const show = performance.now() > overAt && closedFor !== g.id;
+  $("over").hidden = !show;
+  $("againPill").hidden = show || mine < 0 || performance.now() < overAt;
+  if (!show || resultsFor === g.id) return;
+  resultsFor = g.id;
+  const won = mine >= 0 && g.winner === mine, w = g.winner, acc = (k) => (g.shots[k] ? Math.round((100 * g.hits[k]) / g.shots[k]) : 0);
+  $("overTitle").textContent = won ? "Victory!" : mine >= 0 ? "Defeat" : `${seatName(g.seats[w])} wins`;
+  $("overSub").textContent = `${won ? "You" : seatName(g.seats[w])} sank the whole fleet in ${g.shots[w]} shots (${acc(w)}% hits)` + (mine >= 0 && !won ? ` · your aim: ${acc(mine)}%` : "");
+  $("again").hidden = mine < 0;
+  if (won) sound("win");
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  (won ? board.submit(1, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No wins yet. Be the first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+const again = () => { const g = game(); if (g && g.ph === "over") act("again", {}); };
+$("again").onclick = again; $("againPill").onclick = again;
+$("look").onclick = () => { closedFor = game()?.id ?? -1; };
+$("shuffle").onclick = () => { draft.ships = randomFleet(); sound("miss"); };
+$("ready").onclick = () => sendFleet();
+
+// ── INPUT / LOOP ────────────────────────────────────────────────────────────────────
+let views = [], hover = null, drag = null, cursor = -1;
+/** Placing: grab a ship and drag it; a tap without moving turns it (around the square you tapped). */
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  const g = game(), v = g && viewAt(views, e.clientX, e.clientY);
+  if (!v) return;
+  const { r, c } = cellIn(v, e.clientX, e.clientY), cell = r * N + c;
+  if (placing(g) && v.role === "mine" && draft.ships) {
+    const k = draft.ships.findIndex((sh, j) => shipCells(sh, j).includes(cell));
+    if (k < 0) return;
+    const [c0, d] = draft.ships[k], j = d ? Math.floor(cell / N) - Math.floor(c0 / N) : (cell % N) - (c0 % N);
+    drag = { k, j, v, moved: false, bad: false, id: e.pointerId };
+    cv.setPointerCapture(e.pointerId);
+  } else if (v.role === "target") fireAt(cell);
+});
+cv.addEventListener("pointermove", (e) => {
+  const v = viewAt(views, e.clientX, e.clientY);
+  hover = v ? { seat: v.seat, c: (({ r, c }) => r * N + c)(cellIn(v, e.clientX, e.clientY)) } : null;
+  if (!drag || e.pointerId !== drag.id) return;
+  const { r, c } = cellIn(drag.v, e.clientX, e.clientY), [c0, d] = draft.ships[drag.k], len = CONFIG.fleet[drag.k];
+  const r0 = Math.max(0, Math.min(N - (d ? len : 1), r - (d ? drag.j : 0))), q0 = Math.max(0, Math.min(N - (d ? 1 : len), c - (d ? 0 : drag.j)));
+  if (r0 * N + q0 === c0) return;
+  drag.moved = true;
+  const next = draft.ships.slice(); next[drag.k] = [r0 * N + q0, d];
+  if (validFleet(next)) { draft.ships = next; drag.bad = false; } else drag.bad = true;
+});
+cv.addEventListener("pointerup", (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  if (!drag.moved) turnShip(drag.k, drag.j);
+  drag = null;
+});
+cv.addEventListener("pointercancel", () => { drag = null; });
+cv.addEventListener("pointerleave", () => { hover = null; });
+/** Turn a ship a quarter, keeping the tapped square where it is; slide it if it would leave the grid. */
+function turnShip(k, j) {
+  const [c0, d] = draft.ships[k], len = CONFIG.fleet[k], pivot = c0 + j * (d ? N : 1), nd = 1 - d;
+  for (const shift of [0, ...Array.from({ length: len }, (_, i) => [i + 1, -(i + 1)]).flat()]) {
+    const back = j + shift, r = Math.floor(pivot / N) - (nd ? back : 0), c = (pivot % N) - (nd ? 0 : back);
+    if (r < 0 || c < 0 || r >= N || c >= N) continue;
+    const next = draft.ships.slice(); next[k] = [r * N + c, nd];
+    if (validFleet(next)) { draft.ships = next; sound("miss"); return; }
+  }
+  shake = 4;
+}
+// Keys: arrows move the aim on the enemy grid, Space or Enter fires; R shuffles while placing.
+addEventListener("keydown", (e) => {
+  const g = game();
+  if (!g) return;
+  if (placing(g) && (e.key === "r" || e.key === "R")) { draft.ships = randomFleet(); return; }
+  if (placing(g) && e.key === "Enter") { sendFleet(); return; }
+  if (!myTurn(g)) return;
+  const tv = views.find((v) => v.role === "target");
+  if (!tv) return;
+  if (cursor < 0) cursor = hover && hover.seat === tv.seat ? hover.c : Math.floor(N * N / 2);
+  const r = Math.floor(cursor / N), c = cursor % N, mv = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+  if (mv) { e.preventDefault(); cursor = Math.max(0, Math.min(N - 1, r + mv[0])) * N + Math.max(0, Math.min(N - 1, c + mv[1])); hover = { seat: tv.seat, c: cursor }; }
+  if (e.key === " " || e.key === "Enter") { e.preventDefault(); fireAt(cursor); }
+});
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+
+function fixColor() {
+  const g = game(), others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
+  const botColors = g ? g.seats.filter((s) => s.b).map((s) => s.c) : [];
+  if (!others.some(([id, p]) => p.c === myColor && id < net.sessionId) && !botColors.includes(myColor)) return;
+  const taken = new Set([...others.map(([, p]) => p.c), ...botColors]), free = COLORS.find((c) => !taken.has(c));
+  if (free) { myColor = free; net.me.set("c", free); }
+}
+
+let myName = "", myColor = COLORS[0], last = performance.now(), lastHb = 0, lastHud = 0;
+try { myName = localStorage.getItem("mpa-name") || ""; } catch {}
+const pickOne = (list) => list[Math.floor(Math.random() * list.length)];
+if (!myName) { myName = pickOne(NAME_A) + " " + pickOne(NAME_B); try { localStorage.setItem("mpa-name", myName); } catch {} }
+if (ATTRACT) { Object.assign(CONFIG, { botMs: 420, botPlaceMs: 0, shellMs: 330, resultsMs: 1500, botNoise: 0.3 }); $("net").textContent = ""; }
+
+function frame(now) {
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
+  if (isHost()) hostTick(now); else stopHosting();
+  const g = game();
+  if (g) {
+    readMyFleet(g); resendFleet(g, now); myTick(g, now);
+    if (pending && pending.t !== g.t) pending = null;
+    views = layout(g);
+    effects(g, views, now);
+    draw(g, views, now, dt);
+    if (now - lastHud > 100) { lastHud = now; hud(g, now); }
+  } else { cx.setTransform(DPR, 0, 0, DPR, 0, 0); cx.fillStyle = "#061523"; cx.fillRect(0, 0, W, H); }
+  requestAnimationFrame(frame);
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; });
+  for (const type of ["fleet", "fire", "again"]) net.on(type, (data, from) => { if (isHost() && data) host.inbox.push({ type, from, data }); });
+  net.on("myfleet", (d, from) => { // a player re-sending its fleet to me, the new host
+    const g = game(), i = g && d ? seatOf(g, from) : -1;
+    if (i < 0 || d.to !== net.sessionId || d.r !== g.id || host.ready) return;
+    Seal.open(pkOf(from), d.box).then((ships) => { if (validFleet(ships)) host.known.set(i, ships); });
+  });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  myColor = COLORS.find((c) => !taken.has(c)) || pickOne(COLORS);
+  const pk = await Seal.init().catch(() => "");
+  net.me.set({ n: myName, c: myColor, pk, hb: Date.now() });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
