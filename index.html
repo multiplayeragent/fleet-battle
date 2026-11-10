@@ -913,6 +913,7 @@ if (!myName) { myName = pickOne(NAME_A) + " " + pickOne(NAME_B); try { localStor
 if (ATTRACT) { Object.assign(CONFIG, { botMs: 420, botPlaceMs: 0, shellMs: 330, resultsMs: 1500, botNoise: 0.3 }); $("net").textContent = ""; }
 
 function frame(now) {
+  requestAnimationFrame(frame);
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now;
   if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
   if (isHost()) hostTick(now); else stopHosting();
@@ -925,7 +926,6 @@ function frame(now) {
     draw(g, views, now, dt);
     if (now - lastHud > 100) { lastHud = now; hud(g, now); }
   } else { cx.setTransform(DPR, 0, 0, DPR, 0, 0); cx.fillStyle = "#061523"; cx.fillRect(0, 0, W, H); }
-  requestAnimationFrame(frame);
 }
 
 (async function start() {
