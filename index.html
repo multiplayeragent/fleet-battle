@@ -30,6 +30,7 @@
   .box h2 { margin: 0 0 4px; font-size: 28px; } .box p { margin: 0 0 12px; opacity: .8; }
   .box h3 { margin: 6px 0 4px; font-size: 13px; color: var(--gold); text-align: left; }
   .box ol { text-align: left; margin: 0 0 12px; padding-left: 24px; font-size: 14px; min-height: 30px; } .box li span { float: right; }
+  .box li.note { list-style: none; margin-left: -24px; opacity: .75; } /* a status line, not a numbered entry */
   .box button { width: 100%; margin-top: 8px; background: var(--gold); color: #2a1d00; }
   .box button.ghost { background: #ffffff1a; color: #fff; }
   .hide { display: none !important; }
@@ -46,7 +47,7 @@
 <div id="net">Connecting…</div>
 <div id="over" hidden><div class="box">
   <h2 id="overTitle"></h2><p id="overSub"></p>
-  <h3>Most wins</h3><ol id="board"><li>Loading…</li></ol>
+  <h3>Most wins</h3><ol id="board"><li class="note">Loading…</li></ol>
   <button id="again">Play again</button><button id="look" class="ghost">Look at the boards</button>
 </div></div>
 <script>
@@ -826,11 +827,11 @@ function results(g, mine) {
   $("again").hidden = mine < 0;
   if (won) sound("win");
   const list = $("board");
-  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
-  list.innerHTML = "<li>Loading…</li>";
+  if (!board) { list.innerHTML = `<li class="note">Leaderboards need a connection.</li>`; return; }
+  list.innerHTML = `<li class="note">Loading…</li>`;
   (won ? board.submit(1, "inc").catch(() => null) : Promise.resolve()).then(() => board.top(10)).then(({ entries }) => {
-    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No wins yet. Be the first.</li>";
-  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : `<li class="note">No wins yet. Be the first.</li>`;
+  }).catch(() => { list.innerHTML = `<li class="note">Couldn't load the leaderboard.</li>`; });
 }
 const again = () => { const g = game(); if (g && g.ph === "over") act("again", {}); };
 $("again").onclick = again; $("againPill").onclick = again;
@@ -841,8 +842,10 @@ $("ready").onclick = () => sendFleet();
 // ── INPUT / LOOP ────────────────────────────────────────────────────────────────────
 let views = [], hover = null, drag = null, cursor = -1;
 /** Placing: grab a ship and drag it; a tap without moving turns it (around the square you tapped). */
+cv.addEventListener("contextmenu", (e) => e.preventDefault()); // right-click: no browser menu over the sea
 cv.addEventListener("pointerdown", (e) => {
   e.preventDefault();
+  if (e.button > 0) return; // only the main button (or a finger) moves, turns and fires
   const g = game(), v = g && viewAt(views, e.clientX, e.clientY);
   if (!v) return;
   const { r, c } = cellIn(v, e.clientX, e.clientY), cell = r * N + c;
